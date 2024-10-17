@@ -1,0 +1,13 @@
+{
+  "name": "cryptpad-monitoring-plugin",
+  "description": "Monitoring plugin for CryptPad",
+  "version": "0.0.1",
+  "license": "AGPL-3.0+",
+  "dependencies": {
+  },
+  "optionalDependencies": {
+    "prom-client": "^14.2.0"
+  },
+  "devDependencies": {
+  }
+}
