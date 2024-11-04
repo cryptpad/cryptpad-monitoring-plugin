@@ -71,6 +71,9 @@ MONITORING.addMainCommands = (Env) => {
         Monitoring.applyValues(msg.data);
         cb();
     };
+    commands.GET_MONITORING_CACHED_DATA = (msg, cb) => {
+        cb(void 0, monitoringCache);
+    };
     commands.GET_MONITORING_DATA = (msg, cb) => {
         let to = getMonitoringData(Env, map => {
             monitoringCache = map;
@@ -98,7 +101,15 @@ MONITORING.addHttpEvents = (/*Env*/) => {
 
 MONITORING.addHttpEndpoints = (Env, app) => {
     app.get('/metricscache', (req, res) => {
-        api.onMetricsCacheEndpoint(res);
+        Env.sendMessage({
+            command: 'GET_MONITORING_CACHED_DATA',
+        }, (err, value) => {
+            if (err || !value) {
+                res.status(500);
+                return void send500(res);
+            }
+            api.onMetricsEndpoint(res, value);
+        });
     });
     app.get('/metrics', (req, res) => {
         Env.sendMessage({
@@ -110,7 +121,6 @@ MONITORING.addHttpEndpoints = (Env, app) => {
             }
             api.onMetricsEndpoint(res, value);
         });
-
     });
 };
 

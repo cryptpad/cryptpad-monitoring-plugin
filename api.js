@@ -101,12 +101,6 @@ const create = () => {
         });
     };
 
-    Api.onMetricsCacheEndpoint = (res) => {
-        Prometheus.register.metrics().then((data) => {
-            res.set('Content-Type', Prometheus.register.contentType);
-            res.send(data);
-        });
-    };
     Api.onMetricsEndpoint = (res, value) => {
         updateProm(value);
         Prometheus.register.metrics().then((data) => {

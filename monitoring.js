@@ -80,7 +80,7 @@ const processAll = () => {
         let mem = res.mem;
         mem.rss = val.mem?.rss || 0;
         mem.heapTotal = val.mem?.heapTotal || 0;
-        mem.heapUsed = val.mem?.headUsed || 0;
+        mem.heapUsed = val.mem?.heapUsed || 0;
         mem.external = val.mem?.external || 0;
         mem.arrayBuffers = val.mem?.arrayBuffers || 0;
 
