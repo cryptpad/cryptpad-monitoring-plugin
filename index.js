@@ -1,6 +1,7 @@
 const Monitoring = require('./monitoring');
 const Config = require('./config');
 const Api = require('./api');
+const Util = require('../../common-util');
 
 let Prometheus;
 try {
@@ -16,6 +17,22 @@ MONITORING.onWorkerClosed = (type, pid) => {
     Monitoring.clearValues(pid);
 };
 
+let monitoringCache = {};
+const getMonitoringData = Util.notAgainForAnother((Env, cb) => {
+    // Add main process data to monitoring
+    let monitoring = Monitoring.getData('main');
+    let Server = Env.Server;
+    let stats = Server.getSessionStats();
+    monitoring.stats = stats;
+    monitoring.channels = Server.getActiveChannelCount();
+    monitoring.registered = Object.keys(Env.netfluxUsers).length;
+    // Send updated values
+    Monitoring.applyValues(monitoring);
+
+    let map = Monitoring.processAll();
+    cb(map);
+}, Config.interval);
+
 MONITORING.initialize = (Env, type) => {
     if (type === "db-worker") {
         setInterval(() => {
@@ -28,7 +45,6 @@ MONITORING.initialize = (Env, type) => {
         return;
     }
     if (type === "http-worker") {
-        api.initInterval();
         setInterval(() => {
             Env.sendMessage({
                 command: 'MONITORING',
@@ -42,24 +58,27 @@ MONITORING.initialize = (Env, type) => {
     if (type !== "main") { return; }
     // type === main
     setInterval(() => {
-        // Add main process data to monitoring
-        let monitoring = Monitoring.getData('main');
-        let Server = Env.Server;
-        let stats = Server.getSessionStats();
-        monitoring.ws = stats.total;
-        monitoring.channels = Server.getActiveChannelCount();
-        monitoring.registered = Object.keys(Env.netfluxUsers).length;
-        // Send updated values
-        Monitoring.applyValues(monitoring);
-        Env.broadcast('MONITORING', Monitoring.getValues());
-    }, Config.interval);
+        // Update cached values every minute if not called earlier
+        getMonitoringData(Env, map => {
+            monitoringCache = map;
+        });
+    }, 60000);
 };
 
-MONITORING.addMainCommands = (/*Env*/) => {
+MONITORING.addMainCommands = (Env) => {
     const commands = {};
     commands.MONITORING = (msg, cb) => {
         Monitoring.applyValues(msg.data);
         cb();
+    };
+    commands.GET_MONITORING_DATA = (msg, cb) => {
+        let to = getMonitoringData(Env, map => {
+            monitoringCache = map;
+            cb(void 0, map);
+        });
+        if (to) { // function called to recently, use cache
+            cb(void 0, monitoringCache);
+        }
     };
     return commands;
 };
@@ -78,7 +97,21 @@ MONITORING.addHttpEvents = (/*Env*/) => {
 };
 
 MONITORING.addHttpEndpoints = (Env, app) => {
-    app.get('/metrics', api.onMetricsEndpoint);
+    app.get('/metricscache', (req, res) => {
+        api.onMetricsCacheEndpoint(res);
+    });
+    app.get('/metrics', (req, res) => {
+        Env.sendMessage({
+            command: 'GET_MONITORING_DATA',
+        }, (err, value) => {
+            if (err || !value) {
+                res.status(500);
+                return void send500(res);
+            }
+            api.onMetricsEndpoint(res, value);
+        });
+
+    });
 };
 
 MONITORING.increment = Monitoring.increment;
