@@ -2,7 +2,6 @@ const VALUES = {};
 VALUES.mem = () => {
     return process.memoryUsage();
 };
-let oldCpu;
 VALUES.cpu = () => {
     return process.cpuUsage();
 };
@@ -51,7 +50,7 @@ const getFreq = (last, noRound) => {
     let now = +new Date();
     let diffTime = (now - last.time)/1000;
     let diffValue = last.value - (last.oldValue || 0);
-    let val = diffValue/diffTime || 0
+    let val = diffValue/diffTime || 0;
     let freq = noRound ? val : Math.floor(10*val)/10 || 0;
 
     last.time = now;
@@ -92,7 +91,7 @@ const processAll = () => {
 
         cpu.user = userSeconds - (cpuFreq[pid].oldUser || 0);
         cpu.system = systemSeconds - (cpuFreq[pid].oldSystem || 0);
-        cpu.total = cpu.user+cpu.system;;
+        cpu.total = cpu.user+cpu.system;
         cpuFreq[pid].oldUser = userSeconds;
         cpuFreq[pid].oldSystem = systemSeconds;
         cpuFreq[pid].value = sum;

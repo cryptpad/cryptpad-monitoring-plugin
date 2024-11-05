@@ -1,7 +1,7 @@
 let Prometheus;
 try { Prometheus = require('prom-client'); } catch (e) {}
 
-const Config = require('./config');
+//const Config = require('./config');
 
 
 const create = () => {

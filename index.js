@@ -2,6 +2,7 @@ const Monitoring = require('./monitoring');
 const Config = require('./config');
 const Api = require('./api');
 const Util = require('../../common-util');
+const nThen = require('nthen');
 
 let Prometheus;
 try {
@@ -18,6 +19,7 @@ MONITORING.onWorkerClosed = (type, pid) => {
 };
 
 let monitoringCache = {};
+const tos = {};
 const getMonitoringData = Util.notAgainForAnother((Env, cb) => {
     // Add main process data to monitoring
     let monitoring = Monitoring.getData('main');
@@ -29,12 +31,40 @@ const getMonitoringData = Util.notAgainForAnother((Env, cb) => {
     // Send updated values
     Monitoring.applyValues(monitoring);
 
-    let map = Monitoring.processAll();
-    cb(map);
+    // Get workers data
+    // Clear object
+    Object.keys(tos).forEach(k => { delete tos[k]; });
+    const TIMEOUT = 1000;
+    nThen(waitFor => {
+        let txid = Util.guid([]);
+        tos._txid = txid;
+        let dbWorkers = Env.broadcastWorkerCommand({
+            command: 'GET_MONITORING',
+            txid: txid
+        });
+        dbWorkers.forEach(state => {
+            let pid = state.pid;
+            let w = waitFor();
+            let to = setTimeout(w, TIMEOUT);
+            tos[pid] = { w, to };
+        });
+        let httpWorkers = Env.broadcast('GET_MONITORING', {txid});
+        httpWorkers.forEach(worker => {
+            let pid = worker.process.pid;
+            let w = waitFor();
+            let to = setTimeout(w, TIMEOUT);
+            tos[pid] = { w, to };
+        });
+
+    }).nThen(() => {
+        let map = Monitoring.processAll();
+        cb(map);
+    });
 }, Config.interval);
 
 MONITORING.initialize = (Env, type) => {
     if (type === "db-worker") {
+        /*
         setInterval(() => {
             Env.sendMessage({
                 type: 'monitoring',
@@ -42,9 +72,11 @@ MONITORING.initialize = (Env, type) => {
                 data: Monitoring.getData('db-worker')
             });
         }, Config.interval);
+        */
         return;
     }
     if (type === "http-worker") {
+        /*
         setInterval(() => {
             Env.sendMessage({
                 command: 'MONITORING',
@@ -53,6 +85,7 @@ MONITORING.initialize = (Env, type) => {
                 // Done
             });
         }, Config.interval);
+        */
         return;
     }
     if (type !== "main") { return; }
@@ -67,8 +100,18 @@ MONITORING.initialize = (Env, type) => {
 
 MONITORING.addMainCommands = (Env) => {
     const commands = {};
+    // Received from http workers
     commands.MONITORING = (msg, cb) => {
-        Monitoring.applyValues(msg.data);
+        let data = msg.data;
+        Object.keys(tos).forEach(pid => {
+            // Check if this message is a response to our command
+            if (+data.pid !== +pid || data.txid !== tos._txid) {
+                return;
+            }
+            // apply values and call waitfor for this worker
+            Monitoring.applyValues(data.value);
+            tos[pid].w();
+        });
         cb();
     };
     commands.GET_MONITORING_CACHED_DATA = (msg, cb) => {
@@ -88,24 +131,64 @@ MONITORING.addMainCommands = (Env) => {
 MONITORING.addWorkerResponses = (/*Env*/) => {
     const res = {};
     res.monitoring = data => {
-        Monitoring.applyValues(data);
+        Object.keys(tos).forEach(pid => {
+            // Check if this message is a response to our command
+            if (+data.pid !== +pid || data.txid !== tos._txid) {
+                return;
+            }
+            // apply values and call waitfor for this worker
+            Monitoring.applyValues(data.value);
+            tos[pid].w();
+        });
     };
     return res;
 };
 
-MONITORING.addHttpEvents = (/*Env*/) => {
+// DB-WORKER
+MONITORING.addWorkerCommands = (Env) => {
     const events = {};
-    events.MONITORING = api.onEvent;
+    events.GET_MONITORING = (data) => {
+        Env.sendMessage({
+            type: 'monitoring',
+            plugin: true,
+            data: {
+                txid: data.txid,
+                pid: process.pid,
+                value: Monitoring.getData('db-worker')
+            }
+        });
+    };
     return events;
 };
 
+// HTTP-WORKER
+MONITORING.addHttpEvents = (Env) => {
+    const events = {};
+    events.GET_MONITORING = (data) => {
+        Env.sendMessage({
+            command: 'MONITORING',
+            data: {
+                txid: data.txid,
+                pid: process.pid,
+                value: Monitoring.getData('http-worker')
+            }
+        }, () => {
+            // Done
+        });
+
+    };
+    return events;
+};
 MONITORING.addHttpEndpoints = (Env, app) => {
+    const send500 = (res) => {
+        res.status(500);
+        res.send();
+    };
     app.get('/metricscache', (req, res) => {
         Env.sendMessage({
             command: 'GET_MONITORING_CACHED_DATA',
         }, (err, value) => {
             if (err || !value) {
-                res.status(500);
                 return void send500(res);
             }
             api.onMetricsEndpoint(res, value);
@@ -116,7 +199,6 @@ MONITORING.addHttpEndpoints = (Env, app) => {
             command: 'GET_MONITORING_DATA',
         }, (err, value) => {
             if (err || !value) {
-                res.status(500);
                 return void send500(res);
             }
             api.onMetricsEndpoint(res, value);
@@ -124,6 +206,7 @@ MONITORING.addHttpEndpoints = (Env, app) => {
     });
 };
 
+// ALL
 MONITORING.increment = Monitoring.increment;
 MONITORING.getData = Monitoring.getData;
 
