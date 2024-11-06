@@ -42,20 +42,19 @@ const getMonitoringData = Util.notAgainForAnother((Env, cb) => {
             command: 'GET_MONITORING',
             txid: txid
         });
-        dbWorkers.forEach(state => {
-            let pid = state.pid;
-            let w = waitFor();
-            let to = setTimeout(w, TIMEOUT);
-            tos[pid] = { w, to };
-        });
         let httpWorkers = Env.broadcast('GET_MONITORING', {txid});
-        httpWorkers.forEach(worker => {
-            let pid = worker.process.pid;
+        let addTo = worker => {
+            let pid = worker.process?.pid || worker.pid;
             let w = waitFor();
             let to = setTimeout(w, TIMEOUT);
-            tos[pid] = { w, to };
-        });
-
+            let done = () => {
+                w();
+                clearTimeout(to);
+            };
+            tos[pid] = { done };
+        };
+        dbWorkers.forEach(addTo);
+        httpWorkers.forEach(addTo);
     }).nThen(() => {
         let map = Monitoring.processAll();
         cb(map);
@@ -110,7 +109,7 @@ MONITORING.addMainCommands = (Env) => {
             }
             // apply values and call waitfor for this worker
             Monitoring.applyValues(data.value);
-            tos[pid].w();
+            tos[pid].done();
         });
         cb();
     };
@@ -138,7 +137,7 @@ MONITORING.addWorkerResponses = (/*Env*/) => {
             }
             // apply values and call waitfor for this worker
             Monitoring.applyValues(data.value);
-            tos[pid].w();
+            tos[pid].done();
         });
     };
     return res;
