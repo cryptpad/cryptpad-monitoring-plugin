@@ -25,7 +25,8 @@ const getData = (type) => {
 
 const increment = (key, value) => {
     if (typeof(value) !== "number") { value = 1; }
-    calls[key] = (calls[key] || 0) + value;
+    // Prevent negative value
+    calls[key] = (calls[key] || 0) + Math.max(value, 0);
 };
 
 // Only called from main thread:
