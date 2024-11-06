@@ -3,7 +3,9 @@ VALUES.mem = () => {
     return process.memoryUsage();
 };
 VALUES.cpu = () => {
-    return process.cpuUsage();
+    let c = process.cpuUsage();
+    c.time = +new Date();
+    return c;
 };
 const calls = {};
 VALUES.calls = () => {
@@ -38,16 +40,17 @@ const clearValues = (pid) => {
 
 const callsFreq = {};
 const cpuFreq = {};
-const getFreq = (last, noRound) => {
+const getFreq = (last, noRound, time) => {
     last.value = last.value || 0;
     if (!last.time) {
-        last.time = +new Date();
+        last.time = time || +new Date();
         last.oldValue = last.value;
         return;
     }
 
     // last.time exists, we can get a frequency
-    let now = +new Date();
+    // use the provided time (cpu usage) or now (number of calls)
+    let now = time || +new Date();
     let diffTime = (now - last.time)/1000;
     let diffValue = last.value - (last.oldValue || 0);
     let val = diffValue/diffTime || 0;
@@ -95,7 +98,7 @@ const processAll = () => {
         cpuFreq[pid].oldUser = userSeconds;
         cpuFreq[pid].oldSystem = systemSeconds;
         cpuFreq[pid].value = sum;
-        cpu.percent = getFreq(cpuFreq[pid], true);
+        cpu.percent = getFreq(cpuFreq[pid], true, val.cpu?.time);
 
         // Main thread: get server data
         if (type === 'main') {

@@ -34,22 +34,22 @@ const create = () => {
     });
     const cpuUserMetric = new Prometheus.Gauge({
         name: `process_cpu_user_seconds_total`,
-        help: 'Total user CPU time spent in seconds during the configured interval.',
+        help: 'Total user CPU time spent in seconds since last measure.',
         labelNames: ['pid', 'type']
     });
     const cpuSystemMetric = new Prometheus.Gauge({
         name: `process_cpu_system_seconds_total`,
-        help: 'Total system CPU time spent in seconds during the configured interval.',
+        help: 'Total system CPU time spent in seconds since last measure.',
         labelNames: ['pid', 'type']
     });
     const cpuTotalMetric = new Prometheus.Gauge({
         name: `process_cpu_seconds_total`,
-        help: 'Total user and system CPU time spent in seconds during the configured interval',
+        help: 'Total user and system CPU time spent in seconds since last measure',
         labelNames: ['pid', 'type']
     });
     const cpuPercentMetric = new Prometheus.Gauge({
         name: `process_cpu_percent`,
-        help: 'Total user and system CPU time spent divided by the interval duration',
+        help: 'Avarage CPU usage (user+system) since last measure',
         labelNames: ['pid', 'type']
     });
     const wsMetric = new Prometheus.Gauge({
