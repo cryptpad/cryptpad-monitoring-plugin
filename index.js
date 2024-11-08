@@ -164,12 +164,14 @@ MONITORING.addWorkerCommands = (Env) => {
 MONITORING.addHttpEvents = (Env) => {
     const events = {};
     events.GET_MONITORING = (data) => {
+        let res = Monitoring.getData('http-worker');
+        res._stats = Env.Server.getSessionStats();
         Env.sendMessage({
             command: 'MONITORING',
             data: {
                 txid: data.txid,
                 pid: process.pid,
-                value: Monitoring.getData('http-worker')
+                value: res
             }
         }, () => {
             // Done

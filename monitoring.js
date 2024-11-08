@@ -67,6 +67,26 @@ const processAll = () => {
         calls: {} // value per second
     };
     let calls = {}; // total calls number
+
+    // Aggregate ws traffic stats
+    let mainStats;
+    let sumStats = {};
+    Object.keys(data).forEach(pid => {
+        let obj = data[pid];
+        if (obj.stats) {
+            mainStats = obj.stats;
+            return;
+        }
+        if (!obj._stats) { return; }
+        Object.keys(obj._stats).forEach(key => {
+            sumStats[key] = (sumStats[key] || 0) + obj._stats[key];
+        });
+    });
+    if (mainStats) {
+        Object.keys(sumStats).forEach(k => { mainStats[k] = sumStats[k]; });
+    }
+
+
     Object.keys(data).forEach(pid => {
         let val = data[pid];
         let type = val.type;
