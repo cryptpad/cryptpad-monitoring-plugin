@@ -64,10 +64,28 @@ const create = () => {
         name: `active_channels`,
         help: 'Number of active pads',
     });
+
+    const pidMetrics = Object.values(Prometheus.register._metrics);
     const callsMetrics = {};
 
-
+    const clearMetric = (pids, m) => {
+        const h = m.hashMap;
+        Object.keys(h).forEach(key => {
+            let v = h[key];
+            let pid = v?.labels?.pid;
+            if (!pid) { return; }
+            if (!pids.includes(+pid)) {
+                delete h[key];
+            }
+        });
+    };
     const updateProm = (map) => {
+        // Clear old workers data
+        const pids = Object.keys(map).map(Number).filter(Boolean);
+        pidMetrics.forEach(m => {
+            try { clearMetric(pids, m); } catch (e) {}
+        });
+        // Update metrics
         Object.keys(map).forEach(pid => {
             if (pid === 'calls') { return; }
             let val = map[pid];
