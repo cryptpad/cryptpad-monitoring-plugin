@@ -4,6 +4,7 @@
   "version": "0.0.1",
   "license": "AGPL-3.0+",
   "dependencies": {
+    "express": "~4.21.2",
     "ws": "^8.17.1",
     "prom-client": "^14.2.0"
   },
