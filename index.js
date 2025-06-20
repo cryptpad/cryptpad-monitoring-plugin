@@ -22,6 +22,9 @@ let monitoringCache = {};
 const tos = {};
 const getMonitoringData = Util.notAgainForAnother((Env, cb) => {
     // Add main process data to monitoring
+    if (Env.OFFLINE_MODE) {
+        return void cb({});
+    }
     let monitoring = Monitoring.getData('main');
     let Server = Env.Server;
     let stats = Server.getSessionStats();

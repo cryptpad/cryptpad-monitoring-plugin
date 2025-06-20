@@ -90,7 +90,7 @@ const sendRPC = ws => {
     const msg = JSON.stringify([seqRpc, ['GET_FILE_SIZE',channel]]);
     ws.send(JSON.stringify([++seq, 'MSG', historyKeeper, msg]));
 };
-const handleRPC = (msg, ws) => {
+const handleRPC = (msg) => {
     const data = msg[4];
     let parsed;
     try {
@@ -127,7 +127,7 @@ const startWs = () => {
         console.log('WebSocket disconnected, reason:', evt.code);
         setTimeout(startWs, 5000);
     };
-    ws.onopen = evt => {
+    ws.onopen = () => {
         console.log(`WebSocket connected to ${url}`);
         setTimeout(() => {
             sendPing(ws);
