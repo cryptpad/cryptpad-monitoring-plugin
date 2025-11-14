@@ -88,6 +88,7 @@ const create = () => {
         // Update metrics
         Object.keys(map).forEach(pid => {
             if (pid === 'calls') { return; }
+            if (pid === 'other') { return; }
             let val = map[pid];
             let type = val.type;
             rssMetric.set({pid, type}, val.mem?.rss || 0);
@@ -100,13 +101,12 @@ const create = () => {
             cpuSystemMetric.set({pid, type}, val.cpu?.system || 0);
             cpuTotalMetric.set({pid, type}, val.cpu?.total || 0);
             cpuPercentMetric.set({pid, type}, val.cpu?.percent || 0);
-
-            if (type === 'main') {
-                wsMetric.set(val.other?.ws || 0);
-                regMetric.set(val.other?.reg || 0);
-                chanMetric.set(val.other?.channels || 0);
-            }
         });
+
+        wsMetric.set(map?.other?.total || 0);
+        regMetric.set(map?.other?.reg || 0);
+        chanMetric.set(map?.other?.channels || 0);
+
         Object.keys(map.calls || {}).forEach(key => {
             let m = callsMetrics[key];
             if (!m) {

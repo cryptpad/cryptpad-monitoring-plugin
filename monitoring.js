@@ -3,23 +3,36 @@ VALUES.mem = () => {
     return process.memoryUsage();
 };
 VALUES.cpu = () => {
-    let c = process.cpuUsage();
-    c.time = +new Date();
-    return c;
+    return process.cpuUsage();
 };
-const calls = {};
+let calls = {};
+let avgs = {};
 VALUES.calls = () => {
+    Object.keys(avgs).forEach(key => {
+        const all = avgs[key];
+        const avgKey = `${key}_time`;
+        if (!all?.sum || !all.nb || calls[avgKey]) { return; }
+
+        let val = all.value/all.nb;
+        calls[avgKey] = Math.floor(10*val)/10;
+    });
     return calls;
 };
 
 const getData = (type) => {
     const value = {
         pid: process.pid,
-        type: type
+        type: type,
+        time: +new Date()
     };
     Object.keys(VALUES).forEach(key => {
         value[key] = VALUES[key]();
     });
+
+    // reset values
+    avgs = {};
+    calls = {};
+
     return value;
 };
 
@@ -28,57 +41,76 @@ const increment = (key, value) => {
     // Prevent negative value
     calls[key] = (calls[key] || 0) + Math.max(value, 0);
 };
+const setValue = (key, value) => {
+    if (typeof(value) !== "number") { return; }
+    calls[key] = value;
+};
+
+const setAverage = (key, value) => {
+    const obj = avgs[key] ||= {
+        sum: 0,
+        nb: 0
+    };
+    obj.sum += value;
+    obj.nb++;
+};
+const average = (key) => {
+    increment(key);
+    let t = +new Date();
+    return {
+        value: (val) => {
+            setAverage(key, val);
+        },
+        time: () => {
+            let duration = +new Date() - t; // milliseconds
+            setAverage(key, duration);
+        }
+    };
+};
 
 // Only called from main thread:
 
-const monitoringData = {};
+let monitoringData = {};
 const applyValues = (data) => {
     monitoringData[data.pid] = data;
 };
 const clearValues = (pid) => {
     delete monitoringData[pid];
 };
+const resetValues = () => {
+    monitoringData = {};
+};
 
-const callsFreq = {};
-const cpuFreq = {};
-const getFreq = (last, noRound, time) => {
-    last.value = last.value || 0;
-    if (!last.time) {
-        last.time = time || +new Date();
-        last.oldValue = last.value;
-        return;
-    }
+let lastTime;
+const getFreq = (value, time, noRound) => {
+    if (!lastTime) { return 0; }
 
     // last.time exists, we can get a frequency
     // use the provided time (cpu usage) or now (number of calls)
-    let now = time || +new Date();
-    let diffTime = (now - last.time)/1000;
-    let diffValue = last.value - (last.oldValue || 0);
-    let val = diffValue/diffTime || 0;
+    let diffTime = (time - lastTime)/1000;
+    let val = value/diffTime || 0;
     let freq = noRound ? val : Math.floor(10*val)/10 || 0;
 
-    last.time = now;
-    last.oldValue = last.value;
     return freq;
 };
-const processAll = () => {
+const processAll = (time) => {
     const data = monitoringData;
     let map = {
+        other: {},
         calls: {} // value per second
     };
     let calls = {}; // total calls number
+    const stats = {};
+
     Object.keys(data).forEach(pid => {
         let val = data[pid];
         let type = val.type;
-        cpuFreq[pid] = cpuFreq[pid] || {};
 
         // Extract raw memory data
         let res = map[pid] = {
             type: val.type,
             mem: {},
-            cpu: {},
-            other: {},
-            calls: {}
+            cpu: {}
         };
         let mem = res.mem;
         mem.rss = val.mem?.rss || 0;
@@ -89,62 +121,51 @@ const processAll = () => {
 
         // Extract CPU data + percent use
         let cpu = res.cpu;
-        let userSeconds = (val.cpu?.user || 0) / 1000000;
-        let systemSeconds = (val.cpu?.system || 0) / 1000000;
-        let sum = userSeconds + systemSeconds;
-
-        cpu.user = userSeconds - (cpuFreq[pid].oldUser || 0);
-        cpu.system = systemSeconds - (cpuFreq[pid].oldSystem || 0);
+        cpu.user = (val.cpu?.user || 0) / 1000000;
+        cpu.system = (val.cpu?.system || 0) / 1000000;
         cpu.total = cpu.user+cpu.system;
-        cpuFreq[pid].oldUser = userSeconds;
-        cpuFreq[pid].oldSystem = systemSeconds;
-        cpuFreq[pid].value = sum;
-        cpu.percent = getFreq(cpuFreq[pid], true, val.cpu?.time);
+        cpu.percent = getFreq(cpu.total, time, true);
 
         // Main thread: get server data
-        if (type === 'main') {
-            let stats = val.stats;
-            res.other.ws = stats.total || 0;
-            res.other.reg = val.registered || 0;
-            res.other.channels = val.channels || 0;
-
-            ['sent', 'sentSize',
-                'received', 'receivedSize'].forEach(k => {
-                calls['msg_' + k] = calls['msg_' + k] || 0;
-                calls['msg_' + k] += stats[k];
+        if (val.stats) {
+            // Sum results from different WS nodes
+            Object.keys(val.stats).forEach(key => {
+                stats[key] ||= 0;
+                stats[key] += val.stats[key];
             });
         }
 
-        // Number fo RPC calls
+        // Number of incremented calls: SUM from all nodes
         if (val.calls) {
             Object.keys(val.calls).forEach(key => {
-                let k = key;
-                if (type === 'main') {
-                    k = `main_${key}`;
-                } else {
-                    k = `worker_${key}`;
-                }
-                calls[k] = calls[k] || 0;
+                let k = `${type}_${key}`;
+                calls[k] ||= 0;
                 calls[k] += val.calls[key];
             });
         }
     });
 
+    map.other = stats;
+    //map.other.reg = val.registered || 0;
+    //map.other.channels = val.channels || 0;
+
     // Value per second for each "RPC" type
     Object.keys(calls).forEach(key => {
-        let f = callsFreq[key] = callsFreq[key] || {};
-        f.value = calls[key];
-        map.calls[key] = getFreq(f);
+        map.calls[key] = getFreq(calls[key], time, false);
     });
+
+    // Update lastTime
+    lastTime = time;
 
     return map;
 };
 
 module.exports = {
     interval: 5000,
-    increment,
+    increment, setValue, average,
     getData,
     applyValues,
     clearValues,
+    resetValues,
     processAll
 };
