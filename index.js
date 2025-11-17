@@ -15,20 +15,6 @@ const MONITORING = {};
 
 let monitoringCache = {};
 
-
-/* TODO
-* storage:0 HTTP endpoint
-* core
-  * nb channels
-  * nb registered users/teams
-  * worker commands
-* storage
-  * worker commands
-    * number + avg time for each type
-  * store messages?
-  * blob upload?
-*/
-
 /*  takes a function (f) and a time (t) in ms. returns a function wrapper
     which prevents the internal function from being called more than once
     every t ms. if the function is prevented, returns time til next valid
@@ -132,7 +118,7 @@ MONITORING.addStorageCommands = (Env, commands) => {
     };
 };
 
-MONITORING.initStorage = (Env, waitFor) => {
+MONITORING.initStorage = (Env/*, waitFor*/) => {
     if (Env.myId !== "storage:0") { return; }
     setInterval(() => {
         // Update cached values every minute if not called earlier
