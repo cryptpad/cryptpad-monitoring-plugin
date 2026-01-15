@@ -128,7 +128,7 @@ const processAll = (time) => {
 
         // Main thread: get server data
         if (val.stats) {
-            // Sum results from different WS nodes
+            // Sum results from different front nodes
             Object.keys(val.stats).forEach(key => {
                 stats[key] ||= 0;
                 stats[key] += val.stats[key];

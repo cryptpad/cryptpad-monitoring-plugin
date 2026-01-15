@@ -41,7 +41,7 @@ const getMonitoringData = notAgainForAnother((Env, cb) => {
     if (Env.OFFLINE_MODE) { return void cb({}); }
 
     // 1. Get storage:0 data
-    // 2. Get other nodes data (websockets, cores, other storages)
+    // 2. Get other nodes data (fronts, cores, other storages)
 
     Monitoring.resetValues();
 
@@ -51,8 +51,8 @@ const getMonitoringData = notAgainForAnother((Env, cb) => {
     Monitoring.applyValues(monitoring);
 
     nThen(waitFor => {
-        // Broadcast query to all ws nodes
-        Env.modules?.Core?.storageToWs(Env, 'GET_MONITORING', {
+        // Broadcast query to all front nodes
+        Env.modules?.Core?.storageToFront(Env, 'GET_MONITORING', {
         }, waitFor((errors, data) => {
             (data || []).forEach(obj => {
                 Monitoring.applyValues(obj);
@@ -79,10 +79,10 @@ const getMonitoringData = notAgainForAnother((Env, cb) => {
     });
 }, Config.interval);
 
-MONITORING.addWebsocketCommands = (Env, commands) => {
+MONITORING.addFrontCommands = (Env, commands) => {
     commands.GET_MONITORING = (args, cb) => {
 
-        const data = Monitoring.getData('ws');
+        const data = Monitoring.getData('front');
 
         const users = Object.values(Env.users);
         const total = users.length;
