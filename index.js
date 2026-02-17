@@ -126,6 +126,19 @@ MONITORING.initStorage = (Env/*, waitFor*/) => {
             monitoringCache = map;
         });
     }, 60000);
+
+    Env.clusters.on('MONITORING_GET_DATA', (args, cb) => {
+        if (args?.cache) {
+            return void cb(void 0, monitoringCache);
+        }
+        let to = getMonitoringData(Env, map => {
+            monitoringCache = map;
+            return void cb(void 0, monitoringCache);
+        });
+        if (to) { // function called too recently, use cache
+            return void cb(void 0, monitoringCache);
+        }
+    });
 };
 
 let endpointAdded = false;
@@ -133,17 +146,20 @@ const addStorageEndpoint = (Env, app) => {
     if (endpointAdded) { return; }
     endpointAdded = true;
 
-    app.use('/metrics', (req, res) => {
-        let to = getMonitoringData(Env, map => {
-            monitoringCache = map;
-            api.onMetricsEndpoint(res, map);
+    const getDataFromParent = (cache, res) => {
+        if (!Env.sendCommand) { return res.status(404).end(); }
+        Env.sendCommand('MONITORING_GET_DATA', {
+            cache
+        }, (err, data) => {
+            api.onMetricsEndpoint(res, data);
         });
-        if (to) { // function called too recently, use cache
-            api.onMetricsEndpoint(res, monitoringCache);
-        }
+    };
+
+    app.use('/metrics', (req, res) => {
+        getDataFromParent(false, res);
     });
     app.use('/metricscache', (req, res) => {
-        api.onMetricsEndpoint(res, monitoringCache);
+        getDataFromParent(true, res);
     });
 };
 
