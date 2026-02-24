@@ -4,10 +4,15 @@
   "version": "0.0.1",
   "license": "AGPL-3.0+",
   "dependencies": {
+    "chainpad": "^5.3.1",
+    "chainpad-crypto": "^0.3.0",
+    "chainpad-listmap": "^1.2.0",
     "express": "~4.21.2",
-    "ws": "^8.17.1",
-    "prom-client": "^14.2.0"
-  },
-  "devDependencies": {
+    "netflux-websocket": "^1.3.0",
+    "prom-client": "^14.2.0",
+    "scrypt-async": "^2.0.1",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1",
+    "ws": "^8.17.1"
   }
 }
