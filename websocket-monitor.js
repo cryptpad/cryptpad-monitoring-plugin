@@ -27,10 +27,21 @@ let Prometheus;
 try { Prometheus = require('prom-client'); } catch (e) {}
 
 // Load config
+const cliArgs = process.argv.slice(2);
+const debugMode = cliArgs.includes('--debug');
+const configName = cliArgs.find((arg) => !arg.startsWith('--'));
+const configFile = configName ? `ws-config-${configName}.js` : 'ws-config.js';
+const configPath = Path.join(__dirname, configFile);
 let config = {};
 try {
-    config = require('./ws-config');
-} catch (e) {}
+    config = require(configPath);
+} catch (e) {
+    if (configName) {
+        console.error(`Could not load config file: ${configFile}`);
+        console.error('Expected path:', configPath);
+        process.exit(1);
+    }
+}
 
 const configuredUrl = config?.websocketURL || 'ws://localhost:3000/cryptpad_websocket';
 const httpPort = config?.httpPort || 4000;
@@ -45,6 +56,11 @@ const driveTimeout = config?.driveTimeout || 60000;
 const cryptpadSourcePath = config?.cryptpadSourcePath || Path.resolve(__dirname, '../cryptpad');
 
 const log = config?.logStdout ? console.log : () => {};
+const debugLog = (...args) => {
+    if (!debugMode) { return; }
+    log(...args);
+};
+const iso = (t) => new Date(t).toISOString();
 
 
 // Prepare Prometheus
@@ -132,6 +148,12 @@ const normalizeHttpOriginFromWs = (wsUrl) => {
     u.search = '';
     u.hash = '';
     return u.origin;
+};
+
+const getActiveApiOrigin = () => normalizeHttpOriginFromWs(activeUrl);
+const logActiveEndpoints = () => {
+    console.log('Active websocket endpoint:', activeUrl);
+    console.log('Active server API:', getActiveApiOrigin());
 };
 
 const loadDriveDeps = () => {
@@ -262,12 +284,14 @@ const waitForHistoryKeeper = (chan, timeoutMs) => new Promise((resolve, reject) 
 });
 
 const runPingCheck = (network) => {
+    const now = Date.now();
     const lag = network.getLag();
     if (typeof lag !== 'number') {
         throw new Error('No lag available yet');
     }
+    const requestAt = Math.max(0, now - Math.max(0, lag));
     pingMetric.set(lag);
-    log('Last PING', lag);
+    log(`PING ${iso(requestAt)} ${lag}ms`);
 };
 
 const runRpcCheck = async (network, historyKeeper) => {
@@ -302,7 +326,7 @@ const runRpcCheck = async (network, historyKeeper) => {
 
     const time = (+new Date()) - start;
     rpcMetric.set(time);
-    log('Last RPC response time', time);
+    log(`RPC ${iso(start)} ${time}ms`);
 };
 
 const getDriveCounts = (rt) => {
@@ -421,9 +445,9 @@ const getSharedFolderDocsCount = async (rt, network, connectedRts, loadedChannel
             const docs = Object.keys(sharedFilesData).length;
             totalDocumentsInSharedFolders += docs;
             loadedSharedFolders++;
-            log('Shared folder loaded', { id, docs });
+            debugLog('Shared folder loaded', { id, docs });
         } catch (e) {
-            log('Shared folder load failed', { id, error: e?.message || e });
+            debugLog('Shared folder load failed', { id, error: e?.message || e });
         }
     }
 
@@ -474,7 +498,7 @@ const loadTeamDrivesAndShared = async (mainRt, network, connectedRts, loadedChan
             const teamDocs = Object.keys(teamDrive.filesData || {}).length;
             loadedTeamDrives++;
             totalDocumentsInTeamDrives += teamDocs;
-            log('Team drive loaded', { id: team.id, docs: teamDocs });
+            debugLog('Team drive loaded', { id: team.id, docs: teamDocs });
 
             const teamShared = await getSharedFolderDocsCount(
                 teamRt,
@@ -486,7 +510,7 @@ const loadTeamDrivesAndShared = async (mainRt, network, connectedRts, loadedChan
             loadedTeamSharedFolders += teamShared.loadedSharedFolders;
             totalDocumentsInTeamSharedFolders += teamShared.totalDocumentsInSharedFolders;
         } catch (e) {
-            log('Team drive load failed', { id: team.id, error: e?.message || e });
+            debugLog('Team drive load failed', { id: team.id, error: e?.message || e });
         }
     }
 
@@ -523,13 +547,15 @@ const runDriveCheck = async (network) => {
         const time = (+new Date()) - start;
         driveConnectMetric.set(time);
         driveConnectOkMetric.set(1);
-        log('Drive reconnect+load', time);
-        const counts = {
-            ...getDriveCounts(rt),
-            ...shared,
-            ...teams
-        };
-        log('Drive content', counts);
+        log(`DRIVE ${iso(start)} ${time}ms`);
+        if (debugMode) {
+            const counts = {
+                ...getDriveCounts(rt),
+                ...shared,
+                ...teams
+            };
+            log('Drive content', counts);
+        }
     } catch (e) {
         driveConnectOkMetric.set(0);
         console.error('Drive monitor error:', e.message || e);
@@ -558,6 +584,7 @@ const startCombinedMonitor = () => {
             if (activeUrl === primaryUrl && fallbackUrl !== primaryUrl && /EPROTO|wrong version number/i.test(message)) {
                 activeUrl = fallbackUrl;
                 console.log('WebSocket TLS mismatch detected, retrying with', activeUrl);
+                logActiveEndpoints();
             } else {
                 console.error('Combined monitor error:', message);
             }
@@ -569,4 +596,5 @@ const startCombinedMonitor = () => {
     };
     setTimeout(tick, 1000);
 };
+logActiveEndpoints();
 startCombinedMonitor();
