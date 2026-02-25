@@ -338,6 +338,8 @@ const getDriveCounts = (rt) => {
     };
 };
 
+const getDriveProxy = (rt) => rt?.proxy?.drive || rt?.proxy || {};
+
 const resolveDriveUrl = (href) => {
     const origin = normalizeHttpOriginFromWs(activeUrl);
     return new URL(href, origin).toString();
@@ -357,8 +359,8 @@ const createDriveRtFromSecret = (secret, network) => {
     return driveDeps.Listmap.create(config);
 };
 
-const getSharedFolderDocsCount = async (mainRt, network, connectedRts) => {
-    const drive = mainRt?.proxy?.drive || {};
+const getSharedFolderDocsCount = async (rt, network, connectedRts, loadedChannels) => {
+    const drive = getDriveProxy(rt);
     const sharedFolders = drive.sharedFolders || {};
     const entries = Object.entries(sharedFolders);
     let loadedSharedFolders = 0;
@@ -371,11 +373,13 @@ const getSharedFolderDocsCount = async (mainRt, network, connectedRts) => {
             const parsed = driveDeps.Hash.parsePadUrl(resolveDriveUrl(href));
             if (!parsed?.hash || !parsed?.type) { continue; }
             const sharedSecret = driveDeps.Hash.getSecrets(parsed.type, parsed.hash);
+            if (loadedChannels?.has(sharedSecret.channel)) { continue; }
             const sharedRt = createDriveRtFromSecret(sharedSecret, network);
             connectedRts.push(sharedRt);
             await waitForDriveReady(sharedRt);
+            if (loadedChannels) { loadedChannels.add(sharedSecret.channel); }
 
-            const sharedDrive = sharedRt?.proxy || {};
+            const sharedDrive = getDriveProxy(sharedRt);
             const sharedFilesData = sharedDrive.filesData || {};
             const docs = Object.keys(sharedFilesData).length;
             totalDocumentsInSharedFolders += docs;
@@ -392,6 +396,66 @@ const getSharedFolderDocsCount = async (mainRt, network, connectedRts) => {
     };
 };
 
+const getTeamEntries = (mainRt) => {
+    const proxy = mainRt?.proxy || {};
+    const teams = proxy.teams || proxy?.drive?.teams || {};
+    if (!teams || typeof teams !== 'object') { return []; }
+    return Object.entries(teams).map(([id, data]) => ({ id, data }));
+};
+
+const getTeamSecret = (teamData) => {
+    const hash = teamData?.hash || teamData?.roHash;
+    if (hash) {
+        return driveDeps.Hash.getSecrets('team', hash, teamData?.password);
+    }
+    const href = teamData?.href || teamData?.roHref;
+    if (!href) { return; }
+    const parsed = driveDeps.Hash.parsePadUrl(resolveDriveUrl(href));
+    if (!parsed?.hash || !parsed?.type) { return; }
+    return driveDeps.Hash.getSecrets(parsed.type, parsed.hash, teamData?.password);
+};
+
+const loadTeamDrivesAndShared = async (mainRt, network, connectedRts, loadedChannels) => {
+    const teams = getTeamEntries(mainRt);
+    let loadedTeamDrives = 0;
+    let totalDocumentsInTeamDrives = 0;
+    let loadedTeamSharedFolders = 0;
+    let totalDocumentsInTeamSharedFolders = 0;
+
+    for (const team of teams) {
+        try {
+            const secret = getTeamSecret(team.data);
+            if (!secret) { continue; }
+            if (loadedChannels?.has(secret.channel)) { continue; }
+
+            const teamRt = createDriveRtFromSecret(secret, network);
+            connectedRts.push(teamRt);
+            await waitForDriveReady(teamRt);
+            if (loadedChannels) { loadedChannels.add(secret.channel); }
+
+            const teamDrive = getDriveProxy(teamRt);
+            const teamDocs = Object.keys(teamDrive.filesData || {}).length;
+            loadedTeamDrives++;
+            totalDocumentsInTeamDrives += teamDocs;
+            log('Team drive loaded', { id: team.id, docs: teamDocs });
+
+            const teamShared = await getSharedFolderDocsCount(teamRt, network, connectedRts, loadedChannels);
+            loadedTeamSharedFolders += teamShared.loadedSharedFolders;
+            totalDocumentsInTeamSharedFolders += teamShared.totalDocumentsInSharedFolders;
+        } catch (e) {
+            log('Team drive load failed', { id: team.id, error: e?.message || e });
+        }
+    }
+
+    return {
+        totalTeams: teams.length,
+        loadedTeamDrives,
+        totalDocumentsInTeamDrives,
+        loadedTeamSharedFolders,
+        totalDocumentsInTeamSharedFolders
+    };
+};
+
 const runDriveCheck = async (network) => {
     if (!driveMonitorEnabled || !driveDeps) { return; }
     const start = +new Date();
@@ -402,8 +466,10 @@ const runDriveCheck = async (network) => {
         rt = createDriveRtFromSecret(secret, network);
         connectedRts.push(rt);
         await waitForDriveReady(rt);
+        const loadedChannels = new Set([secret.channel]);
 
-        const shared = await getSharedFolderDocsCount(rt, network, connectedRts);
+        const shared = await getSharedFolderDocsCount(rt, network, connectedRts, loadedChannels);
+        const teams = await loadTeamDrivesAndShared(rt, network, connectedRts, loadedChannels);
 
         const time = (+new Date()) - start;
         driveConnectMetric.set(time);
@@ -411,7 +477,8 @@ const runDriveCheck = async (network) => {
         log('Drive reconnect+load', time);
         const counts = {
             ...getDriveCounts(rt),
-            ...shared
+            ...shared,
+            ...teams
         };
         log('Drive content', counts);
     } catch (e) {
