@@ -340,6 +340,43 @@ const getDriveCounts = (rt) => {
 
 const getDriveProxy = (rt) => rt?.proxy?.drive || rt?.proxy || {};
 
+const makeHrefDecryptor = (secondaryKey) => {
+    if (!secondaryKey) { return; }
+    try {
+        const cryptor = driveDeps.CpCrypto.createEncryptor(secondaryKey);
+        return (value) => {
+            if (!value || typeof value !== 'string') { return; }
+            try {
+                return cryptor.decrypt(value);
+            } catch (e) {
+                return;
+            }
+        };
+    } catch (e) {
+        return;
+    }
+};
+
+const resolveSharedFolderHref = (meta, decryptHref) => {
+    const candidate = meta?.href || meta?.roHref;
+    if (!candidate) { return; }
+    if (candidate.indexOf('#') !== -1) { return candidate; }
+    const decrypted = decryptHref?.(candidate);
+    if (decrypted && decrypted.indexOf('#') !== -1) {
+        return decrypted;
+    }
+};
+
+const getSharedFolderEntries = (drive) => {
+    const sharedFolders = drive?.sharedFolders || {};
+    const sharedFoldersTemp = drive?.sharedFoldersTemp || {};
+    const entries = Object.entries(sharedFolders).map(([id, meta]) => ({ id, meta }));
+    Object.entries(sharedFoldersTemp).forEach(([id, meta]) => {
+        entries.push({ id, meta });
+    });
+    return entries;
+};
+
 const resolveDriveUrl = (href) => {
     const origin = normalizeHttpOriginFromWs(activeUrl);
     return new URL(href, origin).toString();
@@ -359,15 +396,15 @@ const createDriveRtFromSecret = (secret, network) => {
     return driveDeps.Listmap.create(config);
 };
 
-const getSharedFolderDocsCount = async (rt, network, connectedRts, loadedChannels) => {
+const getSharedFolderDocsCount = async (rt, network, connectedRts, loadedChannels, secondaryKey) => {
     const drive = getDriveProxy(rt);
-    const sharedFolders = drive.sharedFolders || {};
-    const entries = Object.entries(sharedFolders);
+    const entries = getSharedFolderEntries(drive);
+    const decryptHref = makeHrefDecryptor(secondaryKey);
     let loadedSharedFolders = 0;
     let totalDocumentsInSharedFolders = 0;
 
-    for (const [id, meta] of entries) {
-        const href = meta?.href || meta?.roHref;
+    for (const { id, meta } of entries) {
+        const href = resolveSharedFolderHref(meta, decryptHref);
         if (!href) { continue; }
         try {
             const parsed = driveDeps.Hash.parsePadUrl(resolveDriveUrl(href));
@@ -439,7 +476,13 @@ const loadTeamDrivesAndShared = async (mainRt, network, connectedRts, loadedChan
             totalDocumentsInTeamDrives += teamDocs;
             log('Team drive loaded', { id: team.id, docs: teamDocs });
 
-            const teamShared = await getSharedFolderDocsCount(teamRt, network, connectedRts, loadedChannels);
+            const teamShared = await getSharedFolderDocsCount(
+                teamRt,
+                network,
+                connectedRts,
+                loadedChannels,
+                secret.keys?.secondaryKey
+            );
             loadedTeamSharedFolders += teamShared.loadedSharedFolders;
             totalDocumentsInTeamSharedFolders += teamShared.totalDocumentsInSharedFolders;
         } catch (e) {
@@ -468,7 +511,13 @@ const runDriveCheck = async (network) => {
         await waitForDriveReady(rt);
         const loadedChannels = new Set([secret.channel]);
 
-        const shared = await getSharedFolderDocsCount(rt, network, connectedRts, loadedChannels);
+        const shared = await getSharedFolderDocsCount(
+            rt,
+            network,
+            connectedRts,
+            loadedChannels,
+            secret.keys?.secondaryKey
+        );
         const teams = await loadTeamDrivesAndShared(rt, network, connectedRts, loadedChannels);
 
         const time = (+new Date()) - start;
