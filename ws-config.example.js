@@ -10,6 +10,5 @@ module.exports = {
     driveUsername: 'admin',
     drivePassword: 'xwikirox',
     driveInterval: 5000,
-    driveTimeout: 60000,
-    cryptpadSourcePath: '../cryptpad'
+    driveTimeout: 60000
 };

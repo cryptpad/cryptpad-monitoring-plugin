@@ -9,6 +9,5 @@ module.exports = {
     driveUsername: 'perftest',
     drivePassword: 'h8jvuTEgg69hEr9CWnHsYEfw',
     driveInterval: 10000,
-    driveTimeout: 60000,
-    cryptpadSourcePath: '/home/ludovic/dev/cryptpad/profiling/cryptpad'
+    driveTimeout: 60000
 };

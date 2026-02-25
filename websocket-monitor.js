@@ -1,5 +1,6 @@
 const WebSocket = require('ws').WebSocket;
 const Http = require('node:http');
+const Fs = require('node:fs');
 const Path = require('node:path');
 const Module = require('node:module');
 const Express = require('express');
@@ -53,7 +54,10 @@ const driveUsername = config?.driveUsername || 'perftest';
 const drivePassword = config?.drivePassword || 'preftest2026';
 const driveInterval = config?.driveInterval || 5000;
 const driveTimeout = config?.driveTimeout || 60000;
-const cryptpadSourcePath = config?.cryptpadSourcePath || Path.resolve(__dirname, '../cryptpad');
+const localCryptpadSourcePath = Path.resolve(__dirname, 'cryptpad');
+const cryptpadSourcePath = Fs.existsSync(localCryptpadSourcePath) ?
+    localCryptpadSourcePath :
+    Path.resolve(__dirname, '../cryptpad');
 
 const log = config?.logStdout ? console.log : () => {};
 const debugLog = (...args) => {
