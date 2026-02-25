@@ -76,6 +76,10 @@ const rpcMetric = new Prometheus.Gauge({
     name: `ws_rpc`,
     help: 'Time in milliseconds before receiving a response to our RPC command'
 });
+const websocketConnectMetric = new Prometheus.Gauge({
+    name: `ws_websocket`,
+    help: 'Time in milliseconds to establish the websocket connection'
+});
 const driveConnectMetric = new Prometheus.Gauge({
     name: `ws_drive_connect`,
     help: 'Time in milliseconds to fully reconnect and load the configured user drive'
@@ -575,7 +579,12 @@ const startCombinedMonitor = () => {
         let network;
         let chan;
         try {
+            const websocketStart = Date.now();
             network = await driveDeps.Netflux.connect('', () => new WebSocket(activeUrl));
+            const websocketTime = Date.now() - websocketStart;
+            websocketConnectMetric.set(websocketTime);
+            log(`WEBSOCKET ${iso(websocketStart)} ${websocketTime}ms`);
+
             runPingCheck(network);
 
             chan = await network.join(channel);
