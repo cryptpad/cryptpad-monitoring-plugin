@@ -82,6 +82,7 @@ const resetValues = () => {
 };
 
 let lastTime;
+let old = {};
 const getFreq = (value, time, noRound) => {
     if (!lastTime) { return 0; }
 
@@ -112,6 +113,7 @@ const processAll = (time) => {
             mem: {},
             cpu: {}
         };
+        let prev = old[pid] || {};
         let mem = res.mem;
         mem.rss = val.mem?.rss || 0;
         mem.heapTotal = val.mem?.heapTotal || 0;
@@ -121,8 +123,8 @@ const processAll = (time) => {
 
         // Extract CPU data + percent use
         let cpu = res.cpu;
-        cpu.user = (val.cpu?.user || 0) / 1000000;
-        cpu.system = (val.cpu?.system || 0) / 1000000;
+        cpu.user = ((val.cpu?.user || 0) / 1000000) - (prev?.cpu?.user || 0);
+        cpu.system = ((val.cpu?.system || 0) / 1000000) - (prev?.cpu?.system || 0);
         cpu.total = cpu.user+cpu.system;
         cpu.percent = getFreq(cpu.total, time, true);
 
@@ -157,6 +159,7 @@ const processAll = (time) => {
     // Update lastTime
     lastTime = time;
 
+    old = map;
     return map;
 };
 
