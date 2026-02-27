@@ -49,7 +49,7 @@ const create = () => {
     });
     const cpuPercentMetric = new Prometheus.Gauge({
         name: `process_cpu_percent`,
-        help: 'Avarage CPU usage (user+system) since last measure',
+        help: 'Average CPU usage (user+system) since last measure',
         labelNames: ['pid', 'type']
     });
     const wsMetric = new Prometheus.Gauge({
