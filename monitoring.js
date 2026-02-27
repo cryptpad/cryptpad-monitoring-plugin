@@ -82,7 +82,9 @@ const resetValues = () => {
 };
 
 let lastTime;
-let old = {};
+let old = {
+    calls: {}
+};
 const getFreq = (value, time, noRound) => {
     if (!lastTime) { return 0; }
 
@@ -160,7 +162,9 @@ const processAll = (time) => {
 
     // Value per second for each "RPC" type
     Object.keys(calls).forEach(key => {
-        map.calls[key] = getFreq(calls[key], time, false);
+        const diff = calls[key] - (old?.calls?.['key'] || 0);
+        map.calls[key] = getFreq(diff, time, false);
+        old.calls[key] = calls[key];
     });
 
     // Update lastTime
