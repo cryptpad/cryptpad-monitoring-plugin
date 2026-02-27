@@ -123,10 +123,17 @@ const processAll = (time) => {
 
         // Extract CPU data + percent use
         let cpu = res.cpu;
-        cpu.user = ((val.cpu?.user || 0) / 1000000) - (prev?.cpu?.user || 0);
-        cpu.system = ((val.cpu?.system || 0) / 1000000) - (prev?.cpu?.system || 0);
+        let newUser = (val?.cpu?.user || 0) / 1000000;
+        let newSys = (val?.cpu?.system || 0) / 1000000;
+        cpu.user = newUser - (prev?.user || 0);
+        cpu.system = newSys - (prev?.system || 0);
         cpu.total = cpu.user+cpu.system;
         cpu.percent = getFreq(cpu.total, time, true);
+
+        old[pid] = {
+            user: newUser,
+            system: newSys
+        };
 
         // Main thread: get server data
         if (val.stats) {
@@ -159,7 +166,6 @@ const processAll = (time) => {
     // Update lastTime
     lastTime = time;
 
-    old = map;
     return map;
 };
 
