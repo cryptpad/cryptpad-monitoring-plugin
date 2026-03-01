@@ -6,8 +6,10 @@ module.exports = {
     websocketURL: 'http://localhost:3000',
 
     driveMonitorEnabled: true,
-    driveUsername: 'admin',
-    drivePassword: 'xwikirox',
-    driveInterval: 5000,
-    driveTimeout: 60000
+    driveUsername: 'perftest',
+    drivePassword: 'h8jvuTEgg69hEr9CWnHsYEfw',
+    driveInterval: 30000,
+    driveTimeout: 60000,
+    driveAlertThresholdMs: 15000,
+    alertMailTo: ''
 };

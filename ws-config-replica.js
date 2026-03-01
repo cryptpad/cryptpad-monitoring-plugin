@@ -3,7 +3,7 @@ module.exports = {
     pingInterval: 5000,
     httpAddress: 'localhost',
     httpPort: 4000,
-    websocketURL: 'https://scalable.dev.cryptpad.net',
+    websocketURL: 'https://cryptpadfr.dev.cryptpad.net',
 
     driveMonitorEnabled: true,
     driveUsername: 'perftest',

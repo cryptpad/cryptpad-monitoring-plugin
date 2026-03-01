@@ -3,6 +3,8 @@ const Http = require('node:http');
 const Fs = require('node:fs');
 const Path = require('node:path');
 const Module = require('node:module');
+const Os = require('node:os');
+const ChildProcess = require('node:child_process');
 const Express = require('express');
 const app = Express();
 
@@ -30,9 +32,14 @@ try { Prometheus = require('prom-client'); } catch (e) {}
 // Load config
 const cliArgs = process.argv.slice(2);
 const debugMode = cliArgs.includes('--debug');
+const alertMode = cliArgs.includes('--alert');
+const reportOnAlertMode = alertMode && cliArgs.includes('--report-on-alert');
+const mailOnAlertMode = alertMode && cliArgs.includes('--mail-on-alert');
+const withDriveMode = cliArgs.includes('--withdrive');
 const configName = cliArgs.find((arg) => !arg.startsWith('--'));
 const configFile = configName ? `ws-config-${configName}.js` : 'ws-config.js';
 const configPath = Path.join(__dirname, configFile);
+
 let config = {};
 try {
     config = require(configPath);
@@ -47,13 +54,17 @@ try {
 const configuredUrl = config?.websocketURL || 'ws://localhost:3000/cryptpad_websocket';
 const httpPort = config?.httpPort || 4000;
 const httpAddress = config?.httpAddress || '::';
-const pingInterval = config?.pingInterval || 5000;
+const pingInterval = (Number(config?.pingInterval) > 0) ? Number(config.pingInterval) : 5000;
 
-const driveMonitorEnabled = config?.driveMonitorEnabled !== false;
+const driveInterval = (Number(config?.driveInterval) > 0) ? Number(config.driveInterval) : undefined;
+const driveIntervalConfigured = typeof driveInterval === 'number';
+const driveMonitorEnabled = withDriveMode && driveIntervalConfigured && config?.driveMonitorEnabled !== false;
 const driveUsername = config?.driveUsername || 'perftest';
 const drivePassword = config?.drivePassword || 'preftest2026';
-const driveInterval = config?.driveInterval || 5000;
 const driveTimeout = config?.driveTimeout || 60000;
+const driveAlertThresholdMs = config?.driveAlertThresholdMs || 15000;
+const alertMailTo = config?.alertMailTo;
+const alertMailFrom = config?.alertMailFrom || `websocket-monitor@${Os.hostname()}`;
 const localCryptpadSourcePath = Path.resolve(__dirname, 'cryptpad');
 const cryptpadSourcePath = Fs.existsSync(localCryptpadSourcePath) ?
     localCryptpadSourcePath :
@@ -65,6 +76,11 @@ const debugLog = (...args) => {
     log(...args);
 };
 const iso = (t) => new Date(t).toISOString();
+const slowDriveLimit = 3;
+let slowDriveStreak = 0;
+let slowDriveEvents = [];
+let reportTriggered = false;
+let mailTriggered = false;
 
 
 // Prepare Prometheus
@@ -88,6 +104,18 @@ const driveConnectOkMetric = new Prometheus.Gauge({
     name: `ws_drive_connect_ok`,
     help: '1 if the latest drive reconnect+load check succeeded, 0 otherwise'
 });
+const driveAlertsLastHourMetric = new Prometheus.Gauge({
+    name: `ws_drive_alerts_last_hour`,
+    help: 'Number of DRIVE threshold alerts emitted in the last hour'
+});
+
+const ALERT_WINDOW_MS = 60 * 60 * 1000;
+let driveAlertTimestamps = [];
+const updateDriveAlertsLastHourMetric = (now = Date.now()) => {
+    driveAlertTimestamps = driveAlertTimestamps.filter((ts) => now - ts <= ALERT_WINDOW_MS);
+    driveAlertsLastHourMetric.set(alertMode ? driveAlertTimestamps.length : 0);
+};
+updateDriveAlertsLastHourMetric();
 
 app.get('/wsmetrics', (req, res) => {
     Prometheus.register.metrics().then((data) => {
@@ -164,6 +192,75 @@ const logActiveEndpoints = () => {
     console.log('Active server API:', getActiveApiOrigin());
 };
 
+const getMainServerPid = () => {
+    const out = ChildProcess.execSync(
+        'ps -eaf | grep node | grep /home/cryptpad/cryptpad/server.js | grep -v grep',
+        { encoding: 'utf8' }
+    ).trim();
+    if (!out) { return; }
+    const firstLine = out.split('\n')[0].trim();
+    const parts = firstLine.split(/\s+/);
+    const pid = Number(parts[1]);
+    if (!Number.isInteger(pid) || pid <= 0) { return; }
+    return pid;
+};
+
+const reportOnSlowDrives = () => {
+    if (!reportOnAlertMode || reportTriggered || slowDriveStreak < slowDriveLimit) { return; }
+    try {
+        const pid = getMainServerPid();
+        if (!pid) {
+            throw new Error('Could not find main server PID');
+        }
+        process.kill(pid, 'SIGQUIT');
+        reportTriggered = true;
+        console.error(`REPORT SIGQUIT sent to main node process pid=${pid}`);
+    } catch (e) {
+        console.error('REPORT failed to send SIGQUIT:', e.message || e);
+    }
+};
+
+const mailOnSlowDrives = () => {
+    if (!mailOnAlertMode || mailTriggered || slowDriveStreak < slowDriveLimit) { return; }
+    if (!alertMailTo) {
+        console.error('MAIL failed: missing alertMailTo in config');
+        return;
+    }
+    const subject = `[websocket-monitor] DRIVE threshold exceeded on ${Os.hostname()}`;
+    const bodyLines = [
+        `Host: ${Os.hostname()}`,
+        `API: ${getActiveApiOrigin()}`,
+        `Threshold: ${driveAlertThresholdMs}ms`,
+        `Consecutive limit: ${slowDriveLimit}`,
+        `Events: ${slowDriveEvents.join(' | ')}`
+    ];
+    const mail = [
+        `To: ${alertMailTo}`,
+        `From: ${alertMailFrom}`,
+        `Subject: ${subject}`,
+        '',
+        ...bodyLines,
+        ''
+    ].join('\n');
+
+    try {
+        const proc = ChildProcess.spawnSync('sendmail', ['-t'], {
+            input: mail,
+            encoding: 'utf8'
+        });
+        if (proc.error) {
+            throw proc.error;
+        }
+        if (proc.status !== 0) {
+            throw new Error((proc.stderr || proc.stdout || 'sendmail failed').trim());
+        }
+        mailTriggered = true;
+        console.error(`MAIL sent to ${alertMailTo}`);
+    } catch (e) {
+        console.error('MAIL failed:', e.message || e);
+    }
+};
+
 const loadDriveDeps = () => {
     const fromCryptPad = (p) => require(Path.join(cryptpadSourcePath, p));
     const deps = {
@@ -174,8 +271,7 @@ const loadDriveDeps = () => {
         Constants: fromCryptPad('src/common/common-constants.js'),
         Listmap: require('chainpad-listmap'),
         CpCrypto: require('chainpad-crypto'),
-        ChainPad: require('chainpad'),
-        Netflux: require('netflux-websocket')
+        ChainPad: require('chainpad')
     };
 
     const apiOrigin = normalizeHttpOriginFromWs(activeUrl);
@@ -189,11 +285,31 @@ const loadDriveDeps = () => {
     return deps;
 };
 
-let driveDeps;
+let monitorDeps;
 try {
-    driveDeps = loadDriveDeps();
+    monitorDeps = {
+        Netflux: require('netflux-websocket')
+    };
 } catch (e) {
-    console.error('Drive monitor disabled: missing CryptPad dependencies', e.message);
+    console.error('Websocket monitor disabled: missing dependency netflux-websocket', e.message);
+    process.exit(1);
+}
+
+let driveDeps;
+if (driveMonitorEnabled) {
+    try {
+        driveDeps = loadDriveDeps();
+    } catch (e) {
+        console.error('Drive monitor disabled: missing CryptPad dependencies', e.message);
+    }
+} else if (!withDriveMode) {
+    console.log('Drive checks disabled by default (pass --withdrive to enable)');
+} else if (!driveIntervalConfigured) {
+    console.log('Drive checks disabled: missing driveInterval in config');
+} else if (config?.driveMonitorEnabled === false) {
+    console.log('Drive checks disabled by config (driveMonitorEnabled: false)');
+} else {
+    console.log('Drive checks disabled');
 }
 
 const deriveBytes = (username, password, bytes) => new Promise((resolve) => {
@@ -556,6 +672,25 @@ const runDriveCheck = async (network) => {
         driveConnectMetric.set(time);
         driveConnectOkMetric.set(1);
         log(`DRIVE ${iso(start)} ${time}ms`);
+        if (alertMode) {
+            if (time > driveAlertThresholdMs) {
+                slowDriveStreak++;
+                slowDriveEvents.push(`${iso(start)} ${time}ms`);
+                if (slowDriveEvents.length > slowDriveLimit) {
+                    slowDriveEvents = slowDriveEvents.slice(-slowDriveLimit);
+                }
+                if (slowDriveStreak === slowDriveLimit) {
+                    driveAlertTimestamps.push(Date.now());
+                    updateDriveAlertsLastHourMetric();
+                    console.error(`WARNING: drive connection threshold exceeded ${slowDriveEvents.join(' | ')}`);
+                    reportOnSlowDrives();
+                    mailOnSlowDrives();
+                }
+            } else {
+                slowDriveStreak = 0;
+                slowDriveEvents = [];
+            }
+        }
         if (debugMode) {
             const counts = {
                 ...getDriveCounts(rt),
@@ -566,6 +701,10 @@ const runDriveCheck = async (network) => {
         }
     } catch (e) {
         driveConnectOkMetric.set(0);
+        if (alertMode) {
+            slowDriveStreak = 0;
+            slowDriveEvents = [];
+        }
         console.error('Drive monitor error:', e.message || e);
     } finally {
         connectedRts.forEach(cleanupDriveRt);
@@ -573,14 +712,14 @@ const runDriveCheck = async (network) => {
 };
 
 const startCombinedMonitor = () => {
-    if (!driveDeps) { return; }
-    const cycleInterval = Math.min(pingInterval, driveInterval);
+    let lastDriveCheckAt = 0;
     const tick = async () => {
         let network;
         let chan;
         try {
+            updateDriveAlertsLastHourMetric();
             const websocketStart = Date.now();
-            network = await driveDeps.Netflux.connect('', () => new WebSocket(activeUrl));
+            network = await monitorDeps.Netflux.connect('', () => new WebSocket(activeUrl));
             const websocketTime = Date.now() - websocketStart;
             websocketConnectMetric.set(websocketTime);
             log(`WEBSOCKET ${iso(websocketStart)} ${websocketTime}ms`);
@@ -591,7 +730,12 @@ const startCombinedMonitor = () => {
             const historyKeeper = await waitForHistoryKeeper(chan, pingInterval);
             await runRpcCheck(network, historyKeeper);
 
-            await runDriveCheck(network);
+            const now = Date.now();
+            const shouldRunDrive = driveMonitorEnabled && driveDeps && (now - lastDriveCheckAt >= driveInterval);
+            if (shouldRunDrive) {
+                await runDriveCheck(network);
+                lastDriveCheckAt = Date.now();
+            }
         } catch (e) {
             const message = String(e?.message || e || '');
             if (activeUrl === primaryUrl && fallbackUrl !== primaryUrl && /EPROTO|wrong version number/i.test(message)) {
@@ -605,7 +749,7 @@ const startCombinedMonitor = () => {
             try { chan?.leave?.('Monitoring'); } catch (e) {}
             cleanupNetwork(network);
         }
-        setTimeout(tick, cycleInterval);
+        setTimeout(tick, pingInterval);
     };
     setTimeout(tick, 1000);
 };

@@ -8,6 +8,8 @@ module.exports = {
     driveMonitorEnabled: true,
     driveUsername: 'perftest',
     drivePassword: 'h8jvuTEgg69hEr9CWnHsYEfw',
-    driveInterval: 10000,
-    driveTimeout: 60000
+    driveInterval: 30000,
+    driveTimeout: 60000,
+    driveAlertThresholdMs: 5000,
+    alertMailTo: ''
 };

@@ -1,7 +1,5 @@
 const Monitoring = require('./monitoring');
-const Config = require('./config');
 const Api = require('./api');
-const Util = require('../../common-util');
 const nThen = require('nthen');
 
 let Prometheus;
@@ -18,9 +16,9 @@ MONITORING.onWorkerClosed = (type, pid) => {
     Monitoring.clearValues(pid);
 };
 
-let monitoringCache = {};
 const tos = {};
-const getMonitoringData = Util.notAgainForAnother((Env, cb) => {
+const makeTxid = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+const getMonitoringData = (Env, cb) => {
     // Add main process data to monitoring
     if (Env.OFFLINE_MODE) {
         return void cb({});
@@ -39,7 +37,7 @@ const getMonitoringData = Util.notAgainForAnother((Env, cb) => {
     Object.keys(tos).forEach(k => { delete tos[k]; });
     const TIMEOUT = 1000;
     nThen(waitFor => {
-        let txid = Util.guid([]);
+        let txid = makeTxid();
         tos._txid = txid;
         let dbWorkers = Env.broadcastWorkerCommand({
             command: 'GET_MONITORING',
@@ -62,7 +60,7 @@ const getMonitoringData = Util.notAgainForAnother((Env, cb) => {
         let map = Monitoring.processAll();
         cb(map);
     });
-}, Config.interval);
+};
 
 MONITORING.initialize = (Env, type) => {
     if (type === "db-worker") {
@@ -91,13 +89,6 @@ MONITORING.initialize = (Env, type) => {
         return;
     }
     if (type !== "main") { return; }
-    // type === main
-    setInterval(() => {
-        // Update cached values every minute if not called earlier
-        getMonitoringData(Env, map => {
-            monitoringCache = map;
-        });
-    }, 60000);
 };
 
 MONITORING.addMainCommands = (Env) => {
@@ -116,17 +107,10 @@ MONITORING.addMainCommands = (Env) => {
         });
         cb();
     };
-    commands.GET_MONITORING_CACHED_DATA = (msg, cb) => {
-        cb(void 0, monitoringCache);
-    };
     commands.GET_MONITORING_DATA = (msg, cb) => {
-        let to = getMonitoringData(Env, map => {
-            monitoringCache = map;
+        getMonitoringData(Env, map => {
             cb(void 0, map);
         });
-        if (to) { // function called to recently, use cache
-            cb(void 0, monitoringCache);
-        }
     };
     return commands;
 };
@@ -186,16 +170,6 @@ MONITORING.addHttpEndpoints = (Env, app) => {
         res.status(500);
         res.send();
     };
-    app.get('/metricscache', (req, res) => {
-        Env.sendMessage({
-            command: 'GET_MONITORING_CACHED_DATA',
-        }, (err, value) => {
-            if (err || !value) {
-                return void send500(res);
-            }
-            api.onMetricsEndpoint(res, value);
-        });
-    });
     app.get('/metrics', (req, res) => {
         Env.sendMessage({
             command: 'GET_MONITORING_DATA',
@@ -216,4 +190,3 @@ module.exports = {
   name: "MONITORING",
   modules: Prometheus ? MONITORING : {}
 };
-
