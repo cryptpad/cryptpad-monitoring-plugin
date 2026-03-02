@@ -407,13 +407,39 @@ const waitForHistoryKeeper = (chan, timeoutMs) => new Promise((resolve, reject) 
     chan.on('join', onJoin);
 });
 
-const runPingCheck = (network) => {
-    const now = Date.now();
+const runPingCheck = async (network, socket) => {
+    const start = Date.now();
+    if (socket && typeof socket.ping === 'function' && typeof socket.once === 'function') {
+        await new Promise((resolve, reject) => {
+            const to = setTimeout(() => {
+                socket.off('pong', onPong);
+                reject(new Error('WebSocket ping timeout'));
+            }, pingInterval);
+            const onPong = () => {
+                clearTimeout(to);
+                resolve();
+            };
+            socket.once('pong', onPong);
+            try {
+                socket.ping();
+            } catch (e) {
+                clearTimeout(to);
+                socket.off('pong', onPong);
+                reject(e);
+            }
+        });
+
+        const lag = Date.now() - start;
+        pingMetric.set(lag);
+        log(`PING ${iso(start)} ${lag}ms`);
+        return;
+    }
+
     const lag = network.getLag();
     if (typeof lag !== 'number') {
         throw new Error('No lag available yet');
     }
-    const requestAt = Math.max(0, now - Math.max(0, lag));
+    const requestAt = Math.max(0, start - Math.max(0, lag));
     pingMetric.set(lag);
     log(`PING ${iso(requestAt)} ${lag}ms`);
 };
@@ -716,15 +742,19 @@ const startCombinedMonitor = () => {
     const tick = async () => {
         let network;
         let chan;
+        let socket;
         try {
             updateDriveAlertsLastHourMetric();
             const websocketStart = Date.now();
-            network = await monitorDeps.Netflux.connect('', () => new WebSocket(activeUrl));
+            network = await monitorDeps.Netflux.connect('', () => {
+                socket = new WebSocket(activeUrl);
+                return socket;
+            });
             const websocketTime = Date.now() - websocketStart;
             websocketConnectMetric.set(websocketTime);
             log(`WEBSOCKET ${iso(websocketStart)} ${websocketTime}ms`);
 
-            runPingCheck(network);
+            await runPingCheck(network, socket);
 
             chan = await network.join(channel);
             const historyKeeper = await waitForHistoryKeeper(chan, pingInterval);
