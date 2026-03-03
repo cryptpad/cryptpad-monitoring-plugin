@@ -104,18 +104,23 @@ const driveConnectOkMetric = new Prometheus.Gauge({
     name: `ws_drive_connect_ok`,
     help: '1 if the latest drive reconnect+load check succeeded, 0 otherwise'
 });
-const driveAlertsLastHourMetric = new Prometheus.Gauge({
-    name: `ws_drive_alerts_last_hour`,
-    help: 'Number of DRIVE threshold alerts emitted in the last hour'
+const driveOverThresholdLastHourMetric = new Prometheus.Gauge({
+    name: `ws_drive_over_threshold_last_hour`,
+    help: 'Percent of DRIVE checks over threshold in the last hour (0-100)'
 });
 
 const ALERT_WINDOW_MS = 60 * 60 * 1000;
-let driveAlertTimestamps = [];
-const updateDriveAlertsLastHourMetric = (now = Date.now()) => {
-    driveAlertTimestamps = driveAlertTimestamps.filter((ts) => now - ts <= ALERT_WINDOW_MS);
-    driveAlertsLastHourMetric.set(alertMode ? driveAlertTimestamps.length : 0);
+let driveCheckTimestamps = [];
+let driveOverThresholdTimestamps = [];
+const updateDriveOverThresholdLastHourMetric = (now = Date.now()) => {
+    driveCheckTimestamps = driveCheckTimestamps.filter((ts) => now - ts <= ALERT_WINDOW_MS);
+    driveOverThresholdTimestamps = driveOverThresholdTimestamps.filter((ts) => now - ts <= ALERT_WINDOW_MS);
+    const total = driveCheckTimestamps.length;
+    const over = driveOverThresholdTimestamps.length;
+    const percent = total > 0 ? Number(((over * 100) / total).toFixed(2)) : 0;
+    driveOverThresholdLastHourMetric.set(percent);
 };
-updateDriveAlertsLastHourMetric();
+updateDriveOverThresholdLastHourMetric();
 
 app.get('/wsmetrics', (req, res) => {
     Prometheus.register.metrics().then((data) => {
@@ -695,27 +700,38 @@ const runDriveCheck = async (network) => {
         const teams = await loadTeamDrivesAndShared(rt, network, connectedRts, loadedChannels);
 
         const time = (+new Date()) - start;
+        driveCheckTimestamps.push(Date.now());
+        updateDriveOverThresholdLastHourMetric();
         driveConnectMetric.set(time);
         driveConnectOkMetric.set(1);
         log(`DRIVE ${iso(start)} ${time}ms`);
-        if (alertMode) {
-            if (time > driveAlertThresholdMs) {
+        if (time > driveAlertThresholdMs) {
+            driveOverThresholdTimestamps.push(Date.now());
+            updateDriveOverThresholdLastHourMetric();
+            if (debugMode) {
+                log('Drive over-threshold recorded', {
+                    durationMs: time,
+                    thresholdMs: driveAlertThresholdMs,
+                    overThresholdChecksLastHour: driveOverThresholdTimestamps.length,
+                    driveChecksLastHour: driveCheckTimestamps.length,
+                    overThresholdPercentLastHour: Number(((driveOverThresholdTimestamps.length * 100) / driveCheckTimestamps.length).toFixed(2))
+                });
+            }
+            if (alertMode) {
                 slowDriveStreak++;
                 slowDriveEvents.push(`${iso(start)} ${time}ms`);
                 if (slowDriveEvents.length > slowDriveLimit) {
                     slowDriveEvents = slowDriveEvents.slice(-slowDriveLimit);
                 }
                 if (slowDriveStreak === slowDriveLimit) {
-                    driveAlertTimestamps.push(Date.now());
-                    updateDriveAlertsLastHourMetric();
                     console.error(`WARNING: drive connection threshold exceeded ${slowDriveEvents.join(' | ')}`);
                     reportOnSlowDrives();
                     mailOnSlowDrives();
                 }
-            } else {
-                slowDriveStreak = 0;
-                slowDriveEvents = [];
             }
+        } else if (alertMode) {
+            slowDriveStreak = 0;
+            slowDriveEvents = [];
         }
         if (debugMode) {
             const counts = {
@@ -744,7 +760,7 @@ const startCombinedMonitor = () => {
         let chan;
         let socket;
         try {
-            updateDriveAlertsLastHourMetric();
+            updateDriveOverThresholdLastHourMetric();
             const websocketStart = Date.now();
             network = await monitorDeps.Netflux.connect('', () => {
                 socket = new WebSocket(activeUrl);
