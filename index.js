@@ -151,6 +151,9 @@ const addStorageEndpoint = (Env, app) => {
         Env.sendCommand('MONITORING_GET_DATA', {
             cache
         }, (err, data) => {
+            if (err) {
+                return res.status(500).end();
+            }
             api.onMetricsEndpoint(res, data);
         });
     };
