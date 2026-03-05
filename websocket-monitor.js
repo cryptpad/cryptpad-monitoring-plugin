@@ -73,7 +73,19 @@ const cryptpadSourcePath = Fs.existsSync(localCryptpadSourcePath) ?
 const log = config?.logStdout ? console.log : () => {};
 const debugLog = (...args) => {
     if (!debugMode) { return; }
-    log(...args);
+    console.log(...args);
+};
+const logError = (prefix, error) => {
+    const message = error?.message || String(error || 'Unknown error');
+    console.error(prefix, message);
+    if (!debugMode) { return; }
+    if (error?.stack) {
+        console.error(error.stack);
+        return;
+    }
+    if (error && typeof error === 'object') {
+        console.error(error);
+    }
 };
 const iso = (t) => new Date(t).toISOString();
 const slowDriveLimit = 3;
@@ -104,23 +116,23 @@ const driveConnectOkMetric = new Prometheus.Gauge({
     name: `ws_drive_connect_ok`,
     help: '1 if the latest drive reconnect+load check succeeded, 0 otherwise'
 });
-const driveOverThresholdLastHourMetric = new Prometheus.Gauge({
+const driveOverThresholdLast15MinMetric = new Prometheus.Gauge({
     name: `ws_drive_over_threshold_last_hour`,
-    help: 'Percent of DRIVE checks over threshold in the last hour (0-100)'
+    help: 'Percent of DRIVE checks over threshold in the last 15 minutes (0-100)'
 });
 
-const ALERT_WINDOW_MS = 60 * 60 * 1000;
+const ALERT_WINDOW_MS = 15 * 60 * 1000;
 let driveCheckTimestamps = [];
 let driveOverThresholdTimestamps = [];
-const updateDriveOverThresholdLastHourMetric = (now = Date.now()) => {
+const updateDriveOverThresholdLast15MinMetric = (now = Date.now()) => {
     driveCheckTimestamps = driveCheckTimestamps.filter((ts) => now - ts <= ALERT_WINDOW_MS);
     driveOverThresholdTimestamps = driveOverThresholdTimestamps.filter((ts) => now - ts <= ALERT_WINDOW_MS);
     const total = driveCheckTimestamps.length;
     const over = driveOverThresholdTimestamps.length;
     const percent = total > 0 ? Number(((over * 100) / total).toFixed(2)) : 0;
-    driveOverThresholdLastHourMetric.set(percent);
+    driveOverThresholdLast15MinMetric.set(percent);
 };
-updateDriveOverThresholdLastHourMetric();
+updateDriveOverThresholdLast15MinMetric();
 
 app.get('/wsmetrics', (req, res) => {
     Prometheus.register.metrics().then((data) => {
@@ -701,20 +713,20 @@ const runDriveCheck = async (network) => {
 
         const time = (+new Date()) - start;
         driveCheckTimestamps.push(Date.now());
-        updateDriveOverThresholdLastHourMetric();
+        updateDriveOverThresholdLast15MinMetric();
         driveConnectMetric.set(time);
         driveConnectOkMetric.set(1);
         log(`DRIVE ${iso(start)} ${time}ms`);
         if (time > driveAlertThresholdMs) {
             driveOverThresholdTimestamps.push(Date.now());
-            updateDriveOverThresholdLastHourMetric();
+            updateDriveOverThresholdLast15MinMetric();
             if (debugMode) {
                 log('Drive over-threshold recorded', {
                     durationMs: time,
                     thresholdMs: driveAlertThresholdMs,
-                    overThresholdChecksLastHour: driveOverThresholdTimestamps.length,
-                    driveChecksLastHour: driveCheckTimestamps.length,
-                    overThresholdPercentLastHour: Number(((driveOverThresholdTimestamps.length * 100) / driveCheckTimestamps.length).toFixed(2))
+                    overThresholdChecksLast15Min: driveOverThresholdTimestamps.length,
+                    driveChecksLast15Min: driveCheckTimestamps.length,
+                    overThresholdPercentLast15Min: Number(((driveOverThresholdTimestamps.length * 100) / driveCheckTimestamps.length).toFixed(2))
                 });
             }
             if (alertMode) {
@@ -742,12 +754,25 @@ const runDriveCheck = async (network) => {
             log('Drive content', counts);
         }
     } catch (e) {
+        const failedAt = Date.now();
+        driveCheckTimestamps.push(failedAt);
+        driveOverThresholdTimestamps.push(failedAt);
+        updateDriveOverThresholdLast15MinMetric(failedAt);
+        driveConnectMetric.set(NaN);
         driveConnectOkMetric.set(0);
         if (alertMode) {
-            slowDriveStreak = 0;
-            slowDriveEvents = [];
+            slowDriveStreak++;
+            slowDriveEvents.push(`${iso(start)} ERROR`);
+            if (slowDriveEvents.length > slowDriveLimit) {
+                slowDriveEvents = slowDriveEvents.slice(-slowDriveLimit);
+            }
+            if (slowDriveStreak === slowDriveLimit) {
+                console.error(`WARNING: drive connection threshold exceeded ${slowDriveEvents.join(' | ')}`);
+                reportOnSlowDrives();
+                mailOnSlowDrives();
+            }
         }
-        console.error('Drive monitor error:', e.message || e);
+        logError('Drive monitor error:', e);
     } finally {
         connectedRts.forEach(cleanupDriveRt);
     }
@@ -760,7 +785,7 @@ const startCombinedMonitor = () => {
         let chan;
         let socket;
         try {
-            updateDriveOverThresholdLastHourMetric();
+            updateDriveOverThresholdLast15MinMetric();
             const websocketStart = Date.now();
             network = await monitorDeps.Netflux.connect('', () => {
                 socket = new WebSocket(activeUrl);
@@ -789,7 +814,7 @@ const startCombinedMonitor = () => {
                 console.log('WebSocket TLS mismatch detected, retrying with', activeUrl);
                 logActiveEndpoints();
             } else {
-                console.error('Combined monitor error:', message);
+                logError('Combined monitor error:', e);
             }
         } finally {
             try { chan?.leave?.('Monitoring'); } catch (e) {}
