@@ -10,6 +10,9 @@ module.exports = {
     drivePassword: 'h8jvuTEgg69hEr9CWnHsYEfw',
     driveInterval: 30000,
     driveTimeout: 60000,
-    driveAlertThresholdMs: 5000,
-    alertMailTo: ''
+    driveAlertThresholdMs: 10000,
+    metricsAlertThresholdMs: 10000,
+    driveAlertWindowMs: 185000,
+    alertExtraCommand: './extracommand.sh',
+    alertMailTo: 'ludovic@xwiki.com'
 };

@@ -31,10 +31,58 @@ try { Prometheus = require('prom-client'); } catch (e) {}
 
 // Load config
 const cliArgs = process.argv.slice(2);
+
+const showHelp = () => {
+    console.log(`
+CryptPad WebSocket Monitor
+
+Usage: node websocket-monitor.js [options] [configname]
+
+Options:
+  --debug                    Print detailed debug output
+  --alert                    Enable alert mode for slow/failing DRIVE checks
+  --report-on-alert          Send SIGQUIT to main server on critical outage
+  --mail-on-alert            Send email on alerts (requires alertMailTo in config)
+  --extra-command-on-alert   Run extra command on critical outage (requires alertExtraCommand in config)
+  --withdrive                Enable DRIVE connection monitoring
+  --help                     Show this help message
+
+Config:
+  The configname argument loads ws-config-<configname>.js.
+  Default config is ws-config.js.
+
+Config options (in ws-config.js):
+  - websocketURL           WebSocket URL (default: ws://localhost:3000/cryptpad_websocket)
+  - httpPort               HTTP port for metrics (default: 4000)
+  - pingInterval           Interval between checks in ms (default: 5000)
+  - driveInterval          Interval for DRIVE checks in ms
+  - driveTimeout           Timeout for DRIVE connection in ms
+  - driveAlertThresholdMs  Threshold for slow DRIVE alert in ms
+  - metricsAlertThresholdMs  Window for outage detection in ms (default: 180000 = 3 min)
+  - driveAlertWindowMs     Window for drive unhealthy detection in ms (default: 60000 = 1 min)
+  - alertExtraCommandGracePeriodMs  Grace period before re-running extra command (default: 300000 = 5 min)
+  - alertMailTo            Email recipient for alerts
+  - alertMailFrom          Email sender (default: websocket-monitor@<hostname>)
+  - logStdout              Enable stdout logging (default: false)
+
+Examples:
+  node websocket-monitor.js                         # Run with default config
+  node websocket-monitor.js localhost               # Run with ws-config-localhost.js
+  node websocket-monitor.js --withdrive --alert      # Enable DRIVE monitoring with alerts
+  node websocket-monitor.js --help                  # Show this help
+`);
+    process.exit(0);
+};
+
+if (cliArgs.includes('--help')) {
+    showHelp();
+}
+
 const debugMode = cliArgs.includes('--debug');
 const alertMode = cliArgs.includes('--alert');
 const reportOnAlertMode = alertMode && cliArgs.includes('--report-on-alert');
 const mailOnAlertMode = alertMode && cliArgs.includes('--mail-on-alert');
+const extraCommandOnAlertMode = alertMode && cliArgs.includes('--extra-command-on-alert');
 const withDriveMode = cliArgs.includes('--withdrive');
 const configName = cliArgs.find((arg) => !arg.startsWith('--'));
 const configFile = configName ? `ws-config-${configName}.js` : 'ws-config.js';
@@ -63,6 +111,10 @@ const driveUsername = config?.driveUsername || 'perftest';
 const drivePassword = config?.drivePassword || 'preftest2026';
 const driveTimeout = config?.driveTimeout || 60000;
 const driveAlertThresholdMs = config?.driveAlertThresholdMs || 15000;
+const metricsAlertThresholdMs = (Number(config?.metricsAlertThresholdMs) > 0) ? Number(config.metricsAlertThresholdMs) : 3 * 60 * 1000;
+const driveAlertWindowMs = (Number(config?.driveAlertWindowMs) > 0) ? Number(config.driveAlertWindowMs) : 60 * 1000;
+const alertExtraCommandGracePeriodMs = (Number(config?.alertExtraCommandGracePeriodMs) > 0) ? Number(config.alertExtraCommandGracePeriodMs) : 5 * 60 * 1000;
+const alertExtraCommand = typeof config?.alertExtraCommand === 'string' ? config.alertExtraCommand.trim() : '';
 const alertMailTo = config?.alertMailTo;
 const alertMailFrom = config?.alertMailFrom || `websocket-monitor@${Os.hostname()}`;
 const localCryptpadSourcePath = Path.resolve(__dirname, 'cryptpad');
@@ -75,6 +127,7 @@ const debugLog = (...args) => {
     if (!debugMode) { return; }
     console.log(...args);
 };
+const monitorStartTime = Date.now();
 const logError = (prefix, error) => {
     const message = error?.message || String(error || 'Unknown error');
     console.error(prefix, message);
@@ -87,12 +140,140 @@ const logError = (prefix, error) => {
         console.error(error);
     }
 };
+const markMetricSuccess = (name, at = Date.now()) => {
+    if (!Object.hasOwn(metricSuccessAt, name)) { return; }
+    metricSuccessAt[name] = at;
+};
+const getMetricOutages = (now = Date.now()) => {
+    const names = ['websocket', 'ping', 'rpc'];
+    return names
+        .map((name) => {
+            const lastOk = metricSuccessAt[name] || 0;
+            const downtimeMs = lastOk === 0 ? (now - monitorStartTime) : (now - lastOk);
+            if (downtimeMs <= metricsAlertThresholdMs) { return; }
+            return { name, downtimeMs, neverOk: lastOk === 0 };
+        })
+        .filter(Boolean);
+};
+const runExtraCommandOnOutage = (reason) => {
+    if (!extraCommandOnAlertMode || !alertExtraCommand) { return; }
+    const now = Date.now();
+    if (extraCommandTriggered && (now - extraCommandLastTriggeredAt < alertExtraCommandGracePeriodMs)) { return; }
+    try {
+        ChildProcess.exec(alertExtraCommand, {
+            env: {
+                ...process.env,
+                WS_MONITOR_ALERT_REASON: reason,
+                WS_MONITOR_ALERT_HOST: Os.hostname(),
+                WS_MONITOR_ALERT_API: getActiveApiOrigin()
+            }
+        }, (error) => {
+            if (error) {
+                logError('ALERT COMMAND failed:', error);
+            }
+        });
+        extraCommandTriggered = true;
+        extraCommandLastTriggeredAt = now;
+        console.error(`ALERT COMMAND launched: ${alertExtraCommand}`);
+    } catch (e) {
+        logError('ALERT COMMAND failed to launch:', e);
+    }
+};
+const mailOnOutageAlert = (details, reason) => {
+    if (!mailOnAlertMode || outageMailTriggered) { return; }
+    if (!alertMailTo) {
+        console.error('MAIL failed: missing alertMailTo in config');
+        return;
+    }
+    const subject = `[websocket-monitor] CRITICAL monitoring outage on ${Os.hostname()}`;
+    const bodyLines = [
+        `Host: ${Os.hostname()}`,
+        `API: ${getActiveApiOrigin()}`,
+        `Reason: ${reason}`,
+        `Outages: ${details}`,
+        `Drive unhealthy streak: ${slowDriveStreak}`,
+        `Recent drive events: ${slowDriveEvents.join(' | ') || 'none'}`
+    ];
+    const mail = [
+        `To: ${alertMailTo}`,
+        `From: ${alertMailFrom}`,
+        `Subject: ${subject}`,
+        '',
+        ...bodyLines,
+        ''
+    ].join('\n');
+
+    try {
+        const proc = ChildProcess.spawnSync('sendmail', ['-t'], {
+            input: mail,
+            encoding: 'utf8'
+        });
+        if (proc.error) {
+            throw proc.error;
+        }
+        if (proc.status !== 0) {
+            throw new Error((proc.stderr || proc.stdout || 'sendmail failed').trim());
+        }
+        outageMailTriggered = true;
+        console.error(`MAIL sent to ${alertMailTo} (outage alert)`);
+    } catch (e) {
+        console.error('MAIL failed:', e.message || e);
+    }
+};
+const maybeTriggerOutageAlert = (now = Date.now()) => {
+    if (!alertMode) { return; }
+    if (!driveMonitorEnabled || !driveDeps) { return; }
+    const outages = getMetricOutages(now);
+    const metricsUnavailableTooLong = outages.length > 0;
+
+    const driveDowntimeMs = driveLastSuccessAt === 0 ? (now - monitorStartTime) : (now - driveLastSuccessAt);
+    const driveUnhealthy = driveDowntimeMs > driveAlertWindowMs;
+
+    const driveSlowtimeMs = driveFirstOverThresholdAt === 0 ? 0 : (now - driveFirstOverThresholdAt);
+    const driveSlowTooLong = driveSlowtimeMs > driveAlertWindowMs;
+
+    const shouldAlert = metricsUnavailableTooLong || driveUnhealthy || driveSlowTooLong;
+
+    if (!shouldAlert) {
+        if (!driveUnhealthy && !driveSlowTooLong) {
+            extraCommandTriggered = false;
+            outageMailTriggered = false;
+        }
+        return;
+    }
+
+    let reasonParts = [];
+    if (metricsUnavailableTooLong) {
+        const details = outages.map((outage) => `${outage.name}=${Math.floor(outage.downtimeMs / 1000)}s`).join(', ');
+        reasonParts.push(`metrics-unreachable: ${details}`);
+    }
+    if (driveUnhealthy) {
+        reasonParts.push(`drive-unreachable: ${Math.floor(driveDowntimeMs / 1000)}s (threshold: ${driveAlertWindowMs}ms)`);
+    }
+    if (driveSlowTooLong) {
+        reasonParts.push(`drive-slow: ${Math.floor(driveSlowtimeMs / 1000)}s over threshold ${driveAlertThresholdMs}ms (threshold: ${driveAlertWindowMs}ms)`);
+    }
+    const reason = reasonParts.join('; ');
+    console.error(`ALERT: monitoring outage detected (${reason})`);
+    runExtraCommandOnOutage(reason);
+    mailOnOutageAlert(reason, reason);
+};
 const iso = (t) => new Date(t).toISOString();
 const slowDriveLimit = 3;
 let slowDriveStreak = 0;
 let slowDriveEvents = [];
 let reportTriggered = false;
 let mailTriggered = false;
+let extraCommandTriggered = false;
+let extraCommandLastTriggeredAt = 0;
+let outageMailTriggered = false;
+let driveLastSuccessAt = 0;
+let driveFirstOverThresholdAt = 0;
+const metricSuccessAt = {
+    websocket: 0,
+    ping: 0,
+    rpc: 0
+};
 
 
 // Prepare Prometheus
@@ -120,6 +301,12 @@ const driveOverThresholdLast15MinMetric = new Prometheus.Gauge({
     name: `ws_drive_over_threshold_last_hour`,
     help: 'Percent of DRIVE checks over threshold in the last 15 minutes (0-100)'
 });
+
+pingMetric.set(NaN);
+rpcMetric.set(NaN);
+websocketConnectMetric.set(NaN);
+driveConnectMetric.set(NaN);
+driveConnectOkMetric.set(0);
 
 const ALERT_WINDOW_MS = 15 * 60 * 1000;
 let driveCheckTimestamps = [];
@@ -716,8 +903,13 @@ const runDriveCheck = async (network) => {
         updateDriveOverThresholdLast15MinMetric();
         driveConnectMetric.set(time);
         driveConnectOkMetric.set(1);
+        driveLastSuccessAt = Date.now();
+        markMetricSuccess('drive');
         log(`DRIVE ${iso(start)} ${time}ms`);
         if (time > driveAlertThresholdMs) {
+            if (driveFirstOverThresholdAt === 0) {
+                driveFirstOverThresholdAt = Date.now();
+            }
             driveOverThresholdTimestamps.push(Date.now());
             updateDriveOverThresholdLast15MinMetric();
             if (debugMode) {
@@ -742,6 +934,7 @@ const runDriveCheck = async (network) => {
                 }
             }
         } else if (alertMode) {
+            driveFirstOverThresholdAt = 0;
             slowDriveStreak = 0;
             slowDriveEvents = [];
         }
@@ -753,6 +946,7 @@ const runDriveCheck = async (network) => {
             };
             log('Drive content', counts);
         }
+        maybeTriggerOutageAlert();
     } catch (e) {
         const failedAt = Date.now();
         driveCheckTimestamps.push(failedAt);
@@ -773,6 +967,7 @@ const runDriveCheck = async (network) => {
             }
         }
         logError('Drive monitor error:', e);
+        maybeTriggerOutageAlert();
     } finally {
         connectedRts.forEach(cleanupDriveRt);
     }
@@ -784,22 +979,44 @@ const startCombinedMonitor = () => {
         let network;
         let chan;
         let socket;
+        let websocketCheckOk = false;
+        let pingCheckOk = false;
+        let rpcCheckOk = false;
         try {
             updateDriveOverThresholdLast15MinMetric();
             const websocketStart = Date.now();
-            network = await monitorDeps.Netflux.connect('', () => {
-                socket = new WebSocket(activeUrl);
-                return socket;
-            });
+            const connectWithTimeout = (ms, promise) => {
+                return new Promise((resolve, reject) => {
+                    const to = setTimeout(() => reject(new Error('WebSocket connect timeout')), ms);
+                    promise.then((val) => { clearTimeout(to); resolve(val); }, (err) => { clearTimeout(to); reject(err); });
+                });
+            };
+            try {
+                network = await connectWithTimeout(10000, monitorDeps.Netflux.connect('', () => {
+                    socket = new WebSocket(activeUrl);
+                    socket.on('error', (err) => {
+                        logError('WebSocket connection error:', err);
+                    });
+                    return socket;
+                }));
+            } catch (connErr) {
+                throw connErr;
+            }
             const websocketTime = Date.now() - websocketStart;
             websocketConnectMetric.set(websocketTime);
+            markMetricSuccess('websocket');
+            websocketCheckOk = true;
             log(`WEBSOCKET ${iso(websocketStart)} ${websocketTime}ms`);
 
             await runPingCheck(network, socket);
+            markMetricSuccess('ping');
+            pingCheckOk = true;
 
             chan = await network.join(channel);
             const historyKeeper = await waitForHistoryKeeper(chan, pingInterval);
             await runRpcCheck(network, historyKeeper);
+            markMetricSuccess('rpc');
+            rpcCheckOk = true;
 
             const now = Date.now();
             const shouldRunDrive = driveMonitorEnabled && driveDeps && (now - lastDriveCheckAt >= driveInterval);
@@ -807,6 +1024,7 @@ const startCombinedMonitor = () => {
                 await runDriveCheck(network);
                 lastDriveCheckAt = Date.now();
             }
+            maybeTriggerOutageAlert();
         } catch (e) {
             const message = String(e?.message || e || '');
             if (activeUrl === primaryUrl && fallbackUrl !== primaryUrl && /EPROTO|wrong version number/i.test(message)) {
@@ -816,6 +1034,16 @@ const startCombinedMonitor = () => {
             } else {
                 logError('Combined monitor error:', e);
             }
+            if (!websocketCheckOk) {
+                websocketConnectMetric.set(NaN);
+            }
+            if (!pingCheckOk) {
+                pingMetric.set(NaN);
+            }
+            if (!rpcCheckOk) {
+                rpcMetric.set(NaN);
+            }
+            maybeTriggerOutageAlert();
         } finally {
             try { chan?.leave?.('Monitoring'); } catch (e) {}
             cleanupNetwork(network);

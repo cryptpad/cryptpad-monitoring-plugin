@@ -12,5 +12,8 @@ module.exports = {
     driveInterval: 30000,
     driveTimeout: 60000,
     driveAlertThresholdMs: 15000,
+    metricsAlertThresholdMs: 180000,
+    driveAlertWindowMs: 60000,
+    alertExtraCommand: '',
     alertMailTo: ''
 };
