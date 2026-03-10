@@ -117,10 +117,7 @@ const alertExtraCommandGracePeriodMs = (Number(config?.alertExtraCommandGracePer
 const alertExtraCommand = typeof config?.alertExtraCommand === 'string' ? config.alertExtraCommand.trim() : '';
 const alertMailTo = config?.alertMailTo;
 const alertMailFrom = config?.alertMailFrom || `websocket-monitor@${Os.hostname()}`;
-const localCryptpadSourcePath = Path.resolve(__dirname, 'cryptpad');
-const cryptpadSourcePath = Fs.existsSync(localCryptpadSourcePath) ?
-    localCryptpadSourcePath :
-    Path.resolve(__dirname, '../cryptpad');
+const cryptpadSourcePath = Path.resolve(__dirname, './');
 
 const log = config?.logStdout ? console.log : () => {};
 const debugLog = (...args) => {
